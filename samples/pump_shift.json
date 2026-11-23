@@ -1,0 +1,7 @@
+{
+  "source_id": "QL-day-17",
+  "pages": [
+    {"page_id": "sheet-A", "readings": [{"reading_id": "A", "raw_um": 7, "origin": "pump-A/inboard"}]},
+    {"page_id": "sheet-B", "readings": [{"reading_id": "B", "raw_um": 11, "origin": "pump-B/outboard"}]}
+  ]
+}

@@ -2,6 +2,12 @@ from dataclasses import dataclass
 
 from archive.catalog import Catalog
 from archive.page_io import read_payload_page
+from archive.replay_basis import (
+    find_trusted_page,
+    load_replay_basis,
+    rebuild_page,
+    replay_ticket_multiplier,
+)
 from archive.version_map import RevisionUnavailableError, load_revision
 from delivery.cursor import load_cursor
 from delivery.receipts import list_delivery_receipts
@@ -38,12 +44,24 @@ def reconcile_ticket(catalog: Catalog, ticket_id: int) -> PendingStatement | Shi
         details = []
         try:
             check_coverage(manifest, ticket.revision, cursor, receipts)
-            location = load_revision(conn, ticket.revision)
-            if location.page_count != len(manifest.pages) or location.volume_id != ticket.volume_id:
-                raise CoverageError('revision does not match the ticket manifest')
+            multiplier = replay_ticket_multiplier(conn, ticket_id)
+            if multiplier is None:
+                location = load_revision(conn, ticket.revision)
+                if location.page_count != len(manifest.pages) or location.volume_id != ticket.volume_id:
+                    raise CoverageError('revision does not match the ticket manifest')
+
+                def supply(page_index):
+                    return read_payload_page(catalog, location.region, page_index)
+            else:
+                bases = load_replay_basis(conn, ticket.volume_id)
+                if bases is None or len(bases) != len(manifest.pages):
+                    raise CoverageError('replay ticket lost its verification basis')
+
+                def supply(page_index):
+                    trusted = find_trusted_page(catalog, ticket.volume_id, bases, page_index)
+                    return rebuild_page(trusted, multiplier)
             for expected, receipt in zip(manifest.pages, receipts, strict=True):
-                page = read_payload_page(catalog, location.region, expected.page_index)
-                details.extend(check_provenance(expected, receipt, page))
+                details.extend(check_provenance(expected, receipt, supply(expected.page_index)))
         except (CoverageError, ProvenanceError, RevisionUnavailableError, OSError) as exc:
             return PendingStatement(ticket_id, ticket.revision, str(exc))
         readings = tuple(details)

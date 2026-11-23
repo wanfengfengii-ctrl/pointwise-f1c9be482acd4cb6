@@ -15,15 +15,19 @@ def verify_candidate_coverage(
     reservation: RegionReservation,
     base: RevisionLocation,
     manifest: SourceManifest,
+    read_original=None,
 ) -> None:
     if base.page_count != len(manifest.pages) or base.volume_id != manifest.volume_id:
         raise CalibrationCoverageError('base revision does not match the source manifest')
+    if read_original is None:
+        def read_original(page_index):
+            return read_source_page(catalog, base.region, page_index)
     with catalog.read_transaction() as conn:
         candidates = checked_candidate_pages(catalog, conn, reservation)
         for expected, page in zip(manifest.pages, candidates, strict=True):
             if not matches_page_identity(expected, page):
                 raise CalibrationCoverageError(f'candidate page {page.page_index} differs from the source manifest')
-            original = read_source_page(catalog, base.region, expected.page_index)
+            original = read_original(expected.page_index)
             original_readings = tuple((item.reading_id, item.origin, item.raw_um) for item in original.readings)
             candidate_readings = tuple((item.reading_id, item.origin, item.raw_um) for item in page.readings)
             if original.page_id != expected.source_page or candidate_readings != original_readings:

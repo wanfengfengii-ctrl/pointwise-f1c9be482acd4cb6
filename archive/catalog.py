@@ -57,6 +57,19 @@ CREATE TABLE IF NOT EXISTS delivery_receipts (
     fingerprint TEXT NOT NULL,
     PRIMARY KEY (ticket_id, page_index)
 );
+CREATE TABLE IF NOT EXISTS replay_volumes (
+    volume_id TEXT PRIMARY KEY REFERENCES manifests(volume_id)
+);
+CREATE TABLE IF NOT EXISTS replay_pages (
+    volume_id TEXT NOT NULL REFERENCES replay_volumes(volume_id),
+    page_index INTEGER NOT NULL CHECK (page_index >= 0),
+    basis TEXT NOT NULL,
+    PRIMARY KEY (volume_id, page_index)
+);
+CREATE TABLE IF NOT EXISTS replay_tickets (
+    ticket_id INTEGER PRIMARY KEY REFERENCES tickets(ticket_id),
+    multiplier TEXT NOT NULL
+);
 '''
 
 

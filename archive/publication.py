@@ -21,6 +21,9 @@ class IncompleteCandidateError(RuntimeError):
 def candidate_session(catalog: Catalog):
     # With the writer lock held, any persisted reservation belongs to an interrupted writer.
     with catalog.writer_guard():
+        # Drop orphaned replacement temporaries; they never serve as original sources.
+        for stale in catalog.root.glob('payload/*/*.tmp'):
+            stale.unlink()
         with catalog.write_transaction() as conn:
             conn.execute(
                 "UPDATE calibration_jobs SET state = 'failed' WHERE state IN ('writing', 'ready') "
@@ -32,9 +35,11 @@ def candidate_session(catalog: Catalog):
 
 def reserve_candidate(conn: Connection, volume_id: str, page_count: int) -> RegionReservation:
     protected = {location.region for location in list_current_revisions(conn)}
+    # Ordinary open tickets keep their physical region; replay tickets rebuild
+    # from trusted originals instead, so their region may be reused.
     for (region,) in conn.execute(
         'SELECT DISTINCT r.region FROM tickets AS t JOIN revisions AS r USING (revision) '
-        'WHERE t.closed = 0'
+        'WHERE t.closed = 0 AND t.ticket_id NOT IN (SELECT ticket_id FROM replay_tickets)'
     ):
         if region is None:
             raise InvalidReservationError('an open ticket has no payload region')

@@ -9,7 +9,8 @@ from delivery.close import close_ticket
 from delivery.read_page import DeliveryComplete, next_page
 from delivery.ticket import open_ticket
 from intake.initial_seal import seal_source
-from reconcile.statement import PendingStatement, reconcile_ticket
+from reconcile.statement import PendingStatement, ShiftStatement, reconcile_ticket
+from replay_fixture import change_raw
 
 
 def finish(catalog, ticket):
@@ -121,11 +122,68 @@ def run_shift(root, material):
     }, ensure_ascii=False))
 
 
+def run_replay_shift(root, material):
+    catalog = Catalog(root).initialize()
+    initial = seal_source(catalog, material, replay=True)
+    volume = initial.volume_id
+    old = open_ticket(catalog, volume, replay=True)
+    first = next_page(catalog, old.ticket_id)
+    two = recalibrate_volume(catalog, volume, 2)
+    # 当前区 B 的原值与换算值被改成 19、38 μm，旧区仍存可信原测 11 μm。
+    change_raw(catalog, two.region, 1, 19, 2)
+    three = recalibrate_volume(catalog, volume, 3)
+
+    reopened = Catalog(root).initialize()
+    continued = next_page(reopened, old.ticket_id)
+    if continued.revision != old.revision or continued.page.readings[0].value_um != 11:
+        raise AssertionError(f'replay ticket did not continue with the trusted original: {continued!r}')
+    old_pages = [first, continued]
+    old_statement = reconcile_ticket(reopened, old.ticket_id)
+    newest = open_ticket(reopened, volume, replay=True)
+    newest_pages = finish(reopened, newest)
+    newest_statement = reconcile_ticket(reopened, newest.ticket_id)
+    for statement in (old_statement, newest_statement):
+        if not isinstance(statement, ShiftStatement):
+            raise AssertionError(f'replay reconciliation must complete: {statement!r}')
+    for ticket in (old, newest):
+        close_ticket(reopened, ticket.ticket_id)
+
+    expected = {'old': [
+        [initial.initial_revision, 0, 'sheet-A', 0, 'A', 'pump-A/inboard', 7],
+        [initial.initial_revision, 1, 'sheet-B', 0, 'B', 'pump-B/outboard', 11],
+    ], 'newest': [
+        [three.revision, 0, 'sheet-A', 0, 'A', 'pump-A/inboard', 21],
+        [three.revision, 1, 'sheet-B', 0, 'B', 'pump-B/outboard', 33],
+    ]}
+    actual = {'old': trace(old_pages), 'newest': trace(newest_pages)}
+    totals = [old_statement.totals.total_um, newest_statement.totals.total_um]
+    if actual != expected or totals != [18, 54]:
+        raise AssertionError(f'重放领票或班账与手算不符: pages={actual!r}, totals={totals!r}')
+    print('POINTWISE_SCENARIO ' + json.dumps({
+        'case_id': 'replay_bad_page_shift',
+        'input': {'source': material, 'multipliers': [2, 3],
+                  'bad_page': {'region': two.region, 'page_index': 1, 'raw_um': 19, 'value_um': 38}},
+        'expected': expected, 'actual': actual, 'downstream_expected': [18, 54],
+        'downstream_actual': totals,
+        'statements': {
+            'old': [[item.reading_id, item.origin, item.raw_um, item.value_um]
+                    for item in old_statement.readings],
+            'newest': [[item.reading_id, item.origin, item.raw_um, item.value_um]
+                       for item in newest_statement.readings],
+        },
+        'code_paths': ['intake/initial_seal.py', 'archive/replay_basis.py', 'calibration/job.py',
+                       'delivery/read_page.py', 'reconcile/statement.py'],
+        'oracle': '当前区 B 坏成 19 时按旧区可信原测 11 重标 3 倍版；旧重放票续领 11 核出 18，新票领 21、33 核出 54',
+    }, ensure_ascii=False))
+
+
 def main():
     sample = Path(__file__).resolve().parent / 'samples' / 'pump_shift.json'
     material = json.loads(sample.read_text(encoding='utf-8'))
     with TemporaryDirectory() as directory:
         run_shift(Path(directory) / 'archive', material)
+    with TemporaryDirectory() as directory:
+        run_replay_shift(Path(directory) / 'replay-archive', material)
 
 
 if __name__ == '__main__':

@@ -22,10 +22,14 @@ def write_payload_page(catalog: Catalog, region: str, page: ArchivedPage) -> Non
     if catalog.before_write is not None:
         catalog.before_write(region, page.page_index)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open('wb') as stream:
+    # Replace atomically so an interrupted writer never leaves a torn page:
+    # the slot keeps either the previous or the new trusted original.
+    temporary = path.with_name(path.name + '.tmp')
+    with temporary.open('wb') as stream:
         stream.write(payload)
         stream.flush()
         os.fsync(stream.fileno())
+    os.replace(temporary, path)
 
 
 def read_payload_page(catalog: Catalog, region: str, page_index: int) -> ArchivedPage:

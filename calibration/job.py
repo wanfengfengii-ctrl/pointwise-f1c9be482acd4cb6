@@ -9,6 +9,7 @@ from archive.publication import (
     write_candidate_page,
 )
 from archive.region import RegionReservation
+from archive.replay_basis import find_trusted_page, load_replay_basis, trusted_source_page
 from archive.version_map import RevisionLocation, load_current_revision
 from calibration.completeness import verify_candidate_coverage
 from calibration.convert import validate_multiplier
@@ -39,6 +40,7 @@ def recalibrate_volume(catalog: Catalog, volume_id: str, multiplier: int) -> Rev
         with catalog.write_transaction() as conn:
             base = load_current_revision(conn, volume_id)
             manifest = load_manifest(conn, volume_id)
+            bases = load_replay_basis(conn, volume_id)
             reservation = reserve_candidate(conn, volume_id, len(manifest.pages))
             job = CalibrationJob(volume_id, multiplier, base, reservation)
             conn.execute(
@@ -47,9 +49,18 @@ def recalibrate_volume(catalog: Catalog, volume_id: str, multiplier: int) -> Rev
             )
 
         try:
-            for page in iter_calibrated_pages(catalog, job.base, manifest, job.multiplier):
+            read_page = read_original = None
+            if bases is not None:
+                # Replay volumes source each page from a trusted original that
+                # verifies against the sealed basis, wherever it still resides.
+                def read_page(page_index):
+                    return find_trusted_page(catalog, volume_id, bases, page_index)
+
+                def read_original(page_index):
+                    return trusted_source_page(catalog, volume_id, bases, page_index)
+            for page in iter_calibrated_pages(catalog, job.base, manifest, job.multiplier, read_page):
                 write_candidate_page(catalog, job.reservation, page)
-            verify_candidate_coverage(catalog, job.reservation, job.base, manifest)
+            verify_candidate_coverage(catalog, job.reservation, job.base, manifest, read_original)
             with catalog.write_transaction() as conn:
                 _change_state(conn, job, 'writing', 'ready')
 
